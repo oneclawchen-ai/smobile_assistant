@@ -38,7 +38,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # ================= 2. AI 模型初始化 =================
 # 【文字大腦】：用於一般問答與 RAG 知識庫檢索
 llm = ChatNVIDIA(model="openai/gpt-oss-20b", nvidia_api_key=NVIDIA_API_KEY, temperature=0.2, top_p=0.7)
-embeddings = NVIDIAEmbeddings(model="nvidia/nv-embedqa-e5-v5", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
+embeddings = NVIDIAEmbeddings(model="llama-3.2-nv-embedqa-1b-v2", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
 
 # 【視覺大腦】：專門用於解析網管截圖與 OCR (使用最高精度的 90B 模型)
 vision_llm = ChatNVIDIA(model="meta/llama-3.2-90b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1)
