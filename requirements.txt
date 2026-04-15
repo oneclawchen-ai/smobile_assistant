@@ -3,6 +3,7 @@ line-bot-sdk>=3.14.0
 langchain>=0.1.13
 langchain-nvidia-ai-endpoints
 langchain-community>=0.0.29
+langchain-text-splitters
 pypdf>=4.1.0
 docx2txt>=0.8
 faiss-cpu
