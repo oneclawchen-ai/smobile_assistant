@@ -4,7 +4,9 @@ import base64
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from flask import Flask, request, abort
-
+import logging
+# 隱藏 NVIDIA SDK 的詳細載入資訊，讓日誌只顯示重要警告與錯誤
+logging.getLogger("langchain_nvidia_ai_endpoints").setLevel(logging.WARNING)
 # LINE Bot SDK v3
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
