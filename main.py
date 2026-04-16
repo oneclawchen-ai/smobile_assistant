@@ -5,8 +5,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from flask import Flask, request, abort
 import logging
+
 # 隱藏 NVIDIA SDK 的詳細載入資訊，讓日誌只顯示重要警告與錯誤
 logging.getLogger("langchain_nvidia_ai_endpoints").setLevel(logging.WARNING)
+
 # LINE Bot SDK v3
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -25,6 +27,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
+
 app = Flask(__name__)
 
 # ================= 1. 環境變數設定 =================
@@ -38,7 +41,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # ================= 2. AI 模型初始化 =================
 # 【文字大腦】：用於一般問答與 RAG 知識庫檢索
 llm = ChatNVIDIA(model="openai/gpt-oss-20b", nvidia_api_key=NVIDIA_API_KEY, temperature=0.2, top_p=0.7)
-embeddings = NVIDIAEmbeddings(model="llama-3.2-nv-embedqa-1b-v2", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
+embeddings = NVIDIAEmbeddings(model="nvidia/llama-3.2-nv-embedqa-1b-v2", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
 
 # 【視覺大腦】：專門用於解析網管截圖與 OCR (使用最高精度的 90B 模型)
 vision_llm = ChatNVIDIA(model="meta/llama-3.2-90b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1)
@@ -118,7 +121,8 @@ system_prompt = (
     "【核心規範】：\n"
     "1. 必須使用「繁體中文 (zh-TW)」，嚴禁簡體中文。\n"
     "2. 嚴禁使用 Markdown 表格 (| 符號)。請使用條列式 (一、1. ) 或 Emoji (🚨, 📊, ✅) 分段。\n"
-    "3. 內容需包含：現況白話解釋、嚴重性評估、具體現場處置建議（如參數調整、負載分流、天線傾角調整）。\n\n"
+    "3. 內容需包含：現況白話解釋、嚴重性評估、具體現場處置建議（如參數調整、負載分流、天線傾角調整）。\n"
+    "4. 【重要限制】：你的回覆必須簡潔扼要，總字數嚴禁超過 800 字。\n\n"
     "【參考資料】：\n{context}\n\n"
     "【強制規定】：在每一次回答最後，請換行並加上：\n"
     "『📡 溫馨提醒：以上數值解析由 AI 輔助生成，實際調整請依據網管中心最新 SOP 執行喔！』"
@@ -153,7 +157,7 @@ def get_vision_ai_response(img_path):
             "1. 擷取圖中的關鍵 KPI 數值（如 RRC成功率、PRB負載等）與站台資訊。\n"
             "2. 用繁體中文給出白話文的【品質預警】或【負載告警】。\n"
             "3. 提供具體的現場參數調整或分流建議。\n"
-            "4. 請用條列式排版，絕對不要使用 Markdown 表格。\n"
+            "4. 請用條列式排版，絕對不要使用 Markdown 表格。字數請嚴格控制在 800 字以內。\n"
             "5. 回覆結尾請加上：『📡 溫馨提醒：以上數值解析由 AI 輔助生成，實際調整請依據網管中心最新 SOP 執行喔！』"
         )
         
@@ -201,6 +205,14 @@ def handle_text_message(event):
     except Exception as e:
         ai_reply = f"🚨 抱歉，小幫手的大腦暫時連不上線 (錯誤: {str(e)})，請稍後再試！"
 
+    # --- 新增：安全字數攔截器 (防止 LINE API 400 錯誤) ---
+    if len(ai_reply) > 4800:
+        ai_reply = ai_reply[:4800] + "\n\n(🚨 注意：因分析內容過長，已自動截斷。詳情請參閱網管系統原文。)"
+    
+    if not ai_reply.strip():
+        ai_reply = "📡 抱歉，小幫手分析後無法產出有效建議，請重新輸入數據或檢查格式。"
+    # ----------------------------------------------------
+
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message_with_http_info(
@@ -235,6 +247,14 @@ def handle_image_message(event):
 
         except Exception as e:
             ai_reply = f"🚨 圖片接收或解析失敗：{str(e)}"
+
+        # --- 新增：安全字數攔截器 (防止 LINE API 400 錯誤) ---
+        if len(ai_reply) > 4800:
+            ai_reply = ai_reply[:4800] + "\n\n(🚨 注意：因分析內容過長，已自動截斷。詳情請參閱網管系統原文。)"
+            
+        if not ai_reply.strip():
+            ai_reply = "📡 抱歉，小幫手分析後無法產出有效建議，請檢查截圖是否清晰。"
+        # ----------------------------------------------------
 
         # 回傳分析結果
         line_bot_api.reply_message_with_http_info(
