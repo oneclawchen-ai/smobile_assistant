@@ -73,48 +73,24 @@ scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Taipei'))
 scheduler.add_job(send_morning_greeting, 'cron', hour=7, minute=35)
 scheduler.start()
 
+
+
 # ================= 4. RAG 知識庫初始化 =================
 def initialize_rag():
     global vector_store
     data_dir = "./data"
     
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-        print("\n⚠️ [警告] 找不到 data 資料夾，已自動建立！請放入 SOP 或技術手冊。")
-        return
-
-    documents = []
-    files_count = 0
+    # ... (中間這整段讀取 PDF 的程式碼，前面都必須要有 4 個空白的縮排) ...
     
-    print("\n📂 開始掃描 data 資料夾中的手冊與規範檔案...")
-    for filename in os.listdir(data_dir):
-        filepath = os.path.join(data_dir, filename)
-        ext = filename.lower()
-        try:
-            if ext.endswith(".pdf"):
-                loader = PyPDFLoader(filepath)
-                documents.extend(loader.load())
-                files_count += 1
-            elif ext.endswith(".docx"):
-                loader = Docx2txtLoader(filepath)
-                documents.extend(loader.load())
-                files_count += 1
-        except Exception as e:
-            print(f"❌ 讀取檔案 {filename} 時發生錯誤: {e}")
-
     if documents:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=30)
         docs = text_splitter.split_documents(documents)
         vector_store = FAISS.from_documents(docs, embeddings)
-        print(f"✅ 知識庫載入完成！共讀取 {files_count} 個檔案，切成 {len(docs)} 個區塊。\n")
+        print(f"✅ 知識庫載入完成！共讀取 {files_count} 個檔案。")
     else:
-        print("⚠️ [警告] 機器人將以純對話模式啟動（無 RAG 輔助）。\n")
+        print("⚠️ [警告] 機器人將以純對話模式啟動。")
 
-# ================= 4. RAG 知識庫初始化 =================
-def initialize_rag():
-    # ... (原本裡面的程式碼不變) ...
-
-# 🚀 關鍵修改：使用背景執行緒來載入知識庫，不阻擋伺服器啟動
+# 👇 下面這三行「絕對不可以」有縮排！必須緊貼畫面的最左邊
 print("啟動背景執行緒載入 RAG 知識庫...")
 rag_thread = threading.Thread(target=initialize_rag)
 rag_thread.start()
