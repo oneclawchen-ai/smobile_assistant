@@ -60,6 +60,9 @@ def send_morning_greeting():
         對象：一線維運工程師與主管。
         要求：語氣專業且親切，內容可涉及網路品質優化、告警排障的勉勵，或提醒注意出勤天氣與工安，並加入 Emoji。
         必須使用「繁體中文 (zh-TW)」。不要出現「我是 AI」等字眼。
+        1.prb利用率達80~89%，建議調整電子角(下壓2度)，或Qrxlevmin自-112調整至-105dBm，或進行dlCellPwrRed 0.2w
+        2.prb利用率達90~99%，建議調整電子角(下壓3度)，或Qrxlevmin自-112調整至-98dBm，或進行dlCellPwrRed 0.6w
+
         """
         response = llm.invoke([HumanMessage(content=prompt)])
         greeting_text = response.content.strip()
