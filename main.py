@@ -5,7 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from flask import Flask, request, abort
 import logging
-
+import threading
 # 隱藏 NVIDIA SDK 的詳細載入資訊，讓日誌只顯示重要警告與錯誤
 logging.getLogger("langchain_nvidia_ai_endpoints").setLevel(logging.WARNING)
 
