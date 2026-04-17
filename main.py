@@ -3,6 +3,7 @@ import tempfile
 import base64
 import requests
 import threading
+import time
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from flask import Flask, request, abort
@@ -55,13 +56,24 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # ================= 2. AI 模型初始化 =================
 # 【文字大腦】：直接使用內部代號，跳過別名轉換
-llm = ChatNVIDIA(model="ai-llama-3_1-70b-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.2, top_p=0.7, client={"timeout": 120})
+llm = ChatNVIDIA(
+    model="ai-llama-3_1-70b-instruct", 
+    nvidia_api_key=NVIDIA_API_KEY, 
+    temperature=0.2, 
+    top_p=0.7, 
+    client={"timeout": 60}  # 優化：降低超時時間
+)
 
 # 【知識庫向量模型】：直接使用內部代號
 embeddings = NVIDIAEmbeddings(model="ai-nv-embed-v1", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
 
 # 【視覺大腦】：直接使用內部代號
-vision_llm = ChatNVIDIA(model="ai-llama-3_2-90b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1, client={"timeout": 120})
+vision_llm = ChatNVIDIA(
+    model="ai-llama-3_2-90b-vision-instruct", 
+    nvidia_api_key=NVIDIA_API_KEY, 
+    temperature=0.05,  # 優化：降低溫度提升速度
+    client={"timeout": 60}  # 優化：降低超時時間
+)
 
 vector_store = None
 
@@ -189,7 +201,8 @@ prompt_template = ChatPromptTemplate.from_messages([
 def get_text_ai_response(user_input):
     document_chain = create_stuff_documents_chain(llm, prompt_template)
     if vector_store:
-        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+        # 優化：減少檢索文檔數量提升速度
+        retriever = vector_store.as_retriever(search_kwargs={"k": 2})
         retrieval_chain = create_retrieval_chain(retriever, document_chain)
         response = retrieval_chain.invoke({"input": user_input})
         return response["answer"]
@@ -207,27 +220,33 @@ def get_vision_ai_response(img_path):
         if file_size > 10 * 1024 * 1024:
             return "🚨 圖片檔案過大（超過 10MB），請壓縮後重新上傳。"
         
-        # 讀取並處理圖片
+        # 讀取並處理圖片（優化版本）
         with Image.open(img_path) as img:
-            # 檢查圖片格式
+            # 優化：如果圖片太大，先壓縮
+            max_width, max_height = 1024, 1024
+            if img.width > max_width or img.height > max_height:
+                img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+                print(f"📸 圖片已自動縮放到 {img.width}x{img.height}")
+            
+            # 檢查圖片格式並轉換
             if img.format not in ['JPEG', 'PNG', 'JPG']:
-                # 轉換為 JPEG 格式
                 img = img.convert('RGB')
                 buffer = io.BytesIO()
-                img.save(buffer, format='JPEG', quality=85)
+                img.save(buffer, format='JPEG', quality=75, optimize=True)
                 image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
             else:
-                # 直接編碼
-                with open(img_path, "rb") as image_file:
-                    image_b64 = base64.b64encode(image_file.read()).decode("utf-8")
+                buffer = io.BytesIO()
+                img_converted = img.convert('RGB') if img.format != 'JPEG' else img
+                img_converted.save(buffer, format='JPEG', quality=75, optimize=True)
+                image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
         
-        # 簡化 vision prompt，讓 AI 更容易理解
+        # 超快速 vision prompt（針對速度優化）
         vision_prompt = (
-            "你是一位電信維運專家，請分析這張圖片：\n\n"
-            "1. 首先，仔細觀察圖片中的所有文字內容，將它們一字不漏地抄寫下來。\n"
-            "2. 然後，簡要描述圖片的整體外觀（例如：這是表格、圖表、設備照片等）。\n"
-            "3. 最後，基於圖片內容，提供專業的電信維運分析和建議。\n\n"
-            "請用繁體中文回答，保持簡潔專業。"
+            "分析這張圖片：\n\n"
+            "1. 提取文字\n"
+            "2. 描述外觀\n"
+            "3. 電信分析\n\n"
+            "繁體中文，簡潔專業。"
         )
         
         message = HumanMessage(content=[
@@ -236,8 +255,11 @@ def get_vision_ai_response(img_path):
         ])
         
         print(f"📸 開始分析圖片，大小：{file_size} bytes，格式：{img.format}")
+        start_time = time.time()
         response = vision_llm.invoke([message])
+        elapsed = time.time() - start_time
         result = response.content.strip()
+        print(f"⏱️ 圖片分析耗時：{elapsed:.2f} 秒")
         
         if not result or len(result) < 10:
             return "🚨 圖片分析失敗，可能解析度不足或內容無法辨識。請確認圖片清晰且包含相關資訊。"
@@ -352,3 +374,4 @@ def hello():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
