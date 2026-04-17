@@ -8,7 +8,7 @@ import pytz
 from flask import Flask, request, abort
 import logging
 
-# 隱藏 NVIDIA SDK 的詳細載入資訊
+# 隱藏 NVIDIA SDK 的詳細載入資訊，讓日誌只顯示重要警告與錯誤
 logging.getLogger("langchain_nvidia_ai_endpoints").setLevel(logging.WARNING)
 
 # LINE Bot SDK v3
@@ -41,14 +41,14 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # ================= 2. AI 模型初始化 =================
-# 【文字大腦】
+# 【文字大腦】：直接使用內部代號，跳過別名轉換
 llm = ChatNVIDIA(model="ai-llama-3_1-70b-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.2, top_p=0.7, client={"timeout": 120})
 
-# 【知識庫向量模型】
+# 【知識庫向量模型】：直接使用內部代號
 embeddings = NVIDIAEmbeddings(model="ai-nv-embed-v1", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
 
-# 【全方位視覺大腦】：調升溫度至 0.3 以利描述一般圖片，並增加 timeout 確保複雜圖表處理完成
-vision_llm = ChatNVIDIA(model="ai-llama-3_2-90b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.3, client={"timeout": 150})
+# 【視覺大腦】：直接使用內部代號
+vision_llm = ChatNVIDIA(model="ai-llama-3_2-90b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1, client={"timeout": 120})
 
 vector_store = None
 
@@ -62,6 +62,7 @@ def send_morning_greeting():
         必須使用「繁體中文 (zh-TW)」。不要出現「我是 AI」等字眼。
         1.prb利用率達80~89%，建議調整電子角(下壓2度)，或Qrxlevmin自-112調整至-105dBm，或進行dlCellPwrRed 0.2w
         2.prb利用率達90~99%，建議調整電子角(下壓3度)，或Qrxlevmin自-112調整至-98dBm，或進行dlCellPwrRed 0.6w
+
         """
         response = llm.invoke([HumanMessage(content=prompt)])
         greeting_text = response.content.strip()
@@ -70,7 +71,7 @@ def send_morning_greeting():
             line_bot_api = MessagingApi(api_client)
             broadcast_request = BroadcastRequest(messages=[TextMessage(text=greeting_text)])
             line_bot_api.broadcast(broadcast_request)
-        print(f"✅ 早安廣播已成功發送")
+        print(f"✅ 早安廣播已成功發送：\n{greeting_text}")
     except Exception as e:
         print(f"❌ 早安廣播發送失敗：{e}")
 
@@ -90,11 +91,16 @@ scheduler.start()
 def initialize_rag():
     global vector_store
     data_dir = "./data"
+    
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
+        print("\n⚠️ [警告] 找不到 data 資料夾，已自動建立！請放入 SOP 或技術手冊。")
         return
 
     documents = []
+    files_count = 0
+    
+    print("\n📂 開始掃描 data 資料夾中的手冊與規範檔案...")
     for filename in os.listdir(data_dir):
         filepath = os.path.join(data_dir, filename)
         ext = filename.lower()
@@ -102,32 +108,47 @@ def initialize_rag():
             if ext.endswith(".pdf"):
                 loader = PyPDFLoader(filepath)
                 documents.extend(loader.load())
+                files_count += 1
             elif ext.endswith(".docx"):
                 loader = Docx2txtLoader(filepath)
                 documents.extend(loader.load())
+                files_count += 1
         except Exception as e:
-            print(f"❌ 讀取檔案 {filename} 錯誤: {e}")
+            print(f"❌ 讀取檔案 {filename} 時發生錯誤: {e}")
 
     if documents:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=30)
         docs = text_splitter.split_documents(documents)
         vector_store = FAISS.from_documents(docs, embeddings)
-        print(f"✅ 知識庫載入完成！共切成 {len(docs)} 個區塊。")
+        print(f"✅ 知識庫載入完成！共讀取 {files_count} 個檔案，切成 {len(docs)} 個區塊。\n")
+    else:
+        print("⚠️ [警告] 機器人將以純對話模式啟動（無 RAG 輔助）。\n")
 
+# 👉 注意：這裡沒有縮排，緊貼左側！這樣就不會報錯了！
+print("🚀 啟動背景執行緒載入 RAG 知識庫...")
 rag_thread = threading.Thread(target=initialize_rag)
 rag_thread.start()
 
-# ================= 5. 核心邏輯：文字解析與【升級版】視覺解析 =================
+# ================= 5. 核心邏輯：文字解析與圖片解析 =================
 system_prompt = (
-   "你是一位資深的 5G/6G 與衛星通訊維運專家。你的任務是協助主管與工程師快速決策。\n\n"
+   "你是一位資深的 5G/6G 與衛星通訊維運專家，精通網路參數優化（如 RRC、PRB、CQI、Handover）。\n"
+    "你的任務是將冷冰冰的電信數據與技術代碼，轉譯為具備親和力且直觀的「自然語言通報」，協助主管與工程師快速決策。\n\n"
     "【最高指導原則：嚴格依賴參考資料】\n"
-    "1. 你的所有診斷與處置建議必須基於提供的【參考資料】。\n"
-    "2. 若參考資料中未涵蓋，請回答：「目前提供的技術知識庫中，查無對應的處置規範可供參考」。\n\n"
+    "1. 你的所有診斷與處置建議「必須 100% 基於下方提供的【參考資料】」進行推論。\n"
+    "2. 若參考資料中未涵蓋相關的 SOP、數據或解決方案，請明確回覆：「目前提供的技術知識庫中，查無對應的處置規範可供參考」。\n"
+    "3. 「絕對禁止」憑空捏造參數名稱、自行猜測調整數值，或給出參考資料外的不實建議。\n\n"
     "【核心規範】：\n"
-    "1. 必須使用「繁體中文 (zh-TW)」。\n"
-    "2. 嚴禁使用 Markdown 表格。請使用條列式。\n"
-    "3. 字數嚴禁超過 800 字。\n\n"
-    "【參考資料】：\n{context}\n\n"
+    "1. 必須使用「繁體中文 (zh-TW)」，嚴禁簡體中文。\n"
+    "2. 嚴禁使用 Markdown 表格 (| 符號)。請使用條列式 (一、1. ) 或 Emoji (🚨, 📊, ✅) 分段。\n"
+    "3. 內容需包含：\n"
+    "   - 現況白話解釋\n"
+    "   - 綜合性評估\n"
+    "   - 具體現場處置建議（⚠️ 注意：建議的具體作法必須從參考資料中提取）\n"
+    "   - 建議的參數調整（⚠️ 注意：建議的具體作法必須從參考資料中提取）\n"
+    "4. 【重要限制】：你的回覆必須簡潔扼要，總字數嚴禁超過 800 字。\n\n"
+    "【參考資料】：\n"
+    "{context}\n\n"
+    "【強制規定】：在每一次回答最後，請換行並加上：\n"
     "『📡 溫馨提醒：以上數值解析由 AI 輔助生成，實際調整請依據網管中心最新 SOP 執行喔！』"
 )
 
@@ -143,32 +164,27 @@ def get_text_ai_response(user_input):
         retrieval_chain = create_retrieval_chain(retriever, document_chain)
         response = retrieval_chain.invoke({"input": user_input})
         return response["answer"]
-    return document_chain.invoke({"input": user_input, "context": []})
+    else:
+        return document_chain.invoke({"input": user_input, "context": []})
 
 def get_vision_ai_response(img_path):
-    """
-    修改後的視覺辨識功能：
-    1. 支援一般圖片辨識與描述。
-    2. 強度圖表趨勢與邏輯分析。
-    3. 保留電信維運專業建議。
-    """
     try:
         with open(img_path, "rb") as image_file:
             image_b64 = base64.b64encode(image_file.read()).decode("utf-8")
         
         vision_prompt = (
-            "你是一位具備頂尖視覺辨識與多領域邏輯分析能力的 AI 助手。請觀察此圖片並執行以下分析：\n\n"
-            "一、 【圖像分類與定性】：\n"
-            "判斷圖片類型（如：一般生活照、機房/工程現場照、網管數據截圖、或效能走勢圖表）。\n\n"
-            "二、 【核心內容提取】：\n"
-            "1. 若有文字或數據，請精準擷取關鍵參數（如 Cell ID, PRB, 手寫筆記內容等）。\n"
-            "2. 若為圖表（如折線圖、柱狀圖），請描述視覺上的趨勢（如：10點後數據陡升、曲線呈現週期性波動）。\n"
-            "3. 若為一般照片，請描述主體物件、環境背景及其狀態。\n\n"
-            "三、 【專業邏輯推論】：\n"
-            "1. 針對通訊維運圖表：分析數據間的因果關係（例如：干擾上升與流量下降的同步性）。\n"
-            "2. 針對一般/現場照片：指出觀察到的重點或潛在風險（如設備燈號、施工環境）。\n\n"
-            "四、 【輸出規範】：\n"
-            "請使用繁體中文 (zh-TW)，嚴禁 Markdown 表格，請條列式呈現。若圖片過於模糊請告知。"
+           "你是一位具備頂尖 OCR 辨識與邏輯分析能力的專家。請仔細觀看這張圖片，並「嚴格遵守」以下步驟進行回覆：\n\n"
+            "第一步【強制 OCR 擷取】：\n"
+            "請先把你雙眼在圖片中看到的「所有文字」一字不漏地擷取出來。若為表格，請盡量還原欄位對應關係。如果圖片中完全沒有文字，請明確回答「本圖片無文字」。\n\n"
+            "第二步【客觀畫面描述】：\n"
+            "請以最客觀的角度描述圖片的外觀與排版（例如：這是一張白底黑字的表格截圖、這是一張折線圖、這是一張設備實體照片）。\n"
+            "🚨【最高警告】：絕對禁止憑空捏造圖片中不存在的物件（如風景、山丘、人物等）。只要你沒看到的，就不准寫！\n\n"
+            "第三步【專業深度解析】：\n"
+            "請基於「第一步」擷取出來的真實文字與「第二步」的客觀畫面，進行邏輯分析：\n"
+            " - 若內容涉及行動通訊或網管參數（如 IMMLB、Handover、PRB），請以資深電信維運專家的角度，解釋這些參數的用途與優化目的。\n"
+            " - 若為其他領域圖表或報表，請總結其核心重點。\n\n"
+            "第四步【排版規範】：\n"
+            "請全程使用繁體中文 (zh-TW)，嚴格按照上述「第一步」至「第三步」的架構條列式輸出。不要使用 Markdown 表格。若圖片過於模糊無法辨識，請直接回答「圖片解析度不足，無法準確辨識」。"
         )
         
         message = HumanMessage(content=[
@@ -199,17 +215,25 @@ def handle_text_message(event):
         
     clean_message = user_message.replace("行南維運小幫手", "").strip()
     if not clean_message:
-         clean_message = "請用資深行動通訊維運前輩的人設簡短打個招呼，並問我有什麼需要幫忙分析？"
+         clean_message = "請用資深行動通訊維運前輩的人設簡短打個招呼，並問我有什麼告警數據或網路問題需要幫忙分析？"
 
     try:
         ai_reply = get_text_ai_response(clean_message)
         ai_reply = ai_reply.replace("###", "").replace("**", "").strip()
     except Exception as e:
-        ai_reply = f"🚨 抱歉，大腦暫時連不上線 (錯誤: {str(e)})"
+        ai_reply = f"🚨 抱歉，小幫手的大腦暫時連不上線 (錯誤: {str(e)})，請稍後再試！"
+
+    if len(ai_reply) > 4800:
+        ai_reply = ai_reply[:4800] + "\n\n(🚨 注意：因分析內容過長，已自動截斷。詳情請參閱網管系統原文。)"
+    if not ai_reply.strip():
+        ai_reply = "📡 抱歉，小幫手分析後無法產出有效建議，請重新輸入數據或檢查格式。"
 
     with ApiClient(configuration) as api_client:
-        MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=ai_reply)])
+        MessagingApi(api_client).reply_message_with_http_info(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=ai_reply)]
+            )
         )
 
 @handler.add(MessageEvent, message=ImageMessageContent)
@@ -227,10 +251,18 @@ def handle_image_message(event):
             os.remove(img_path)
 
         except Exception as e:
-            ai_reply = f"🚨 圖片解析失敗：{str(e)}"
+            ai_reply = f"🚨 圖片接收或解析失敗：{str(e)}"
 
-        MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=ai_reply)])
+        if len(ai_reply) > 4800:
+            ai_reply = ai_reply[:4800] + "\n\n(🚨 注意：因分析內容過長，已自動截斷。詳情請參閱網管系統原文。)"
+        if not ai_reply.strip():
+            ai_reply = "📡 抱歉，小幫手分析後無法產出有效建議，請檢查截圖是否清晰。"
+
+        MessagingApi(api_client).reply_message_with_http_info(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=ai_reply)]
+            )
         )
 
 @app.route("/", methods=['GET'])
