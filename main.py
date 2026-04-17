@@ -45,7 +45,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 llm = ChatNVIDIA(model="ai-llama-3_1-70b-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.2, top_p=0.7, client={"timeout": 120})
 
 # 【知識庫向量模型】：直接使用內部代號
-embeddings = NVIDIAEmbeddings(model="ai-llama-3_2-nv-embedqa-1b-v2", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
+embeddings = NVIDIAEmbeddings(model="ai-nv-embed-v1", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
 
 # 【視覺大腦】：直接使用內部代號
 vision_llm = ChatNVIDIA(model="ai-llama-3_2-90b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1, client={"timeout": 120})
