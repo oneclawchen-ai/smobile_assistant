@@ -48,7 +48,7 @@ llm = ChatNVIDIA(model="ai-llama-3_1-70b-instruct", nvidia_api_key=NVIDIA_API_KE
 embeddings = NVIDIAEmbeddings(model="ai-llama-3_2-nv-embedqa-1b-v2", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
 
 # 【視覺大腦】：直接使用內部代號
-vision_llm = ChatNVIDIA(model="ai-llama-3_2-11b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1, client={"timeout": 120})
+vision_llm = ChatNVIDIA(model="ai-llama-3_2-90b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1, client={"timeout": 120})
 
 vector_store = None
 
