@@ -41,14 +41,14 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # ================= 2. AI 模型初始化 =================
-# 【文字大腦】：升級為最新一代 Llama 3.3 70B 模型
-llm = ChatNVIDIA(model="meta/llama-3.3-70b-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.2, top_p=0.7)
+# 【文字大腦】：改用 SDK 0.0.11 完美支援的經典版 Llama 3 70B
+llm = ChatNVIDIA(model="meta/llama3-70b-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.2, top_p=0.7)
 
-# 【知識庫向量模型】
+# 【知識庫向量模型】：維持不變
 embeddings = NVIDIAEmbeddings(model="nvidia/llama-3.2-nv-embedqa-1b-v2", nvidia_api_key=NVIDIA_API_KEY, truncate="END")
 
-# 【視覺大腦】：改用速度與精度兼具的 Llama 3.2 11B 視覺模型 (支援圖片與 OCR)
-vision_llm = ChatNVIDIA(model="meta/llama-3.2-11b-vision-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1)
+# 【視覺大腦】：改用相容性極高、且擅長 OCR 的微軟 Phi-3 視覺模型
+vision_llm = ChatNVIDIA(model="microsoft/phi-3-vision-128k-instruct", nvidia_api_key=NVIDIA_API_KEY, temperature=0.1)
 
 vector_store = None
 
