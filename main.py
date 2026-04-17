@@ -8,7 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from flask import Flask, request, abort
 import logging
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import io
 
 # 隱藏 NVIDIA SDK 的詳細載入資訊，讓日誌只顯示重要警告與錯誤
@@ -222,31 +222,51 @@ def get_vision_ai_response(img_path):
         
         # 讀取並處理圖片（優化版本）
         with Image.open(img_path) as img:
+            original_format = img.format
+            
             # 優化：如果圖片太大，先壓縮
-            max_width, max_height = 1024, 1024
+            max_width, max_height = 1280, 1280  # 提高到 1280 以保留更多細節
             if img.width > max_width or img.height > max_height:
                 img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
                 print(f"📸 圖片已自動縮放到 {img.width}x{img.height}")
             
-            # 檢查圖片格式並轉換
-            if img.format not in ['JPEG', 'PNG', 'JPG']:
-                img = img.convert('RGB')
-                buffer = io.BytesIO()
-                img.save(buffer, format='JPEG', quality=75, optimize=True)
-                image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-            else:
-                buffer = io.BytesIO()
-                img_converted = img.convert('RGB') if img.format != 'JPEG' else img
-                img_converted.save(buffer, format='JPEG', quality=75, optimize=True)
-                image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            # 圖片預處理：增強對比度和銳度以改善 OCR
+            img_processed = img.convert('RGB')
+            
+            # 增強對比度（幫助識別文字）
+            enhancer = ImageEnhance.Contrast(img_processed)
+            img_processed = enhancer.enhance(1.5)  # 提升 50% 對比度
+            
+            # 增強銳度（使文字邊界更清晰）
+            enhancer = ImageEnhance.Sharpness(img_processed)
+            img_processed = enhancer.enhance(1.3)  # 提升 30% 銳度
+            
+            # 增強亮度（避免過暗）
+            enhancer = ImageEnhance.Brightness(img_processed)
+            img_processed = enhancer.enhance(1.1)  # 提升 10% 亮度
+            
+            # 保存為 JPEG，使用更高品質
+            buffer = io.BytesIO()
+            img_processed.save(buffer, format='JPEG', quality=85, optimize=False)  # 提高到 85，關閉優化以保留細節
+            image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            
+            print(f"📸 圖片已預處理：增強對比度 +50%、銳度 +30%、亮度 +10%")
         
-        # 超快速 vision prompt（針對速度優化）
+        # 優化的 OCR prompt - 更明確和詳細
         vision_prompt = (
-            "分析這張圖片：\n\n"
-            "1. 提取文字\n"
-            "2. 描述外觀\n"
-            "3. 電信分析\n\n"
-            "繁體中文，簡潔專業。"
+            "你是一位專業的 OCR 文字識別專家和電信維運分析師。\n\n"
+            "【第一步 - 強制 OCR 擷取】\n"
+            "請仔細觀察圖片中的所有文字內容（包括表格、圖表、標籤等），一字不漏地將其完整抄寫出來。\n"
+            "特別注意：\n"
+            "- 所有數字、參數名稱、單位\n"
+            "- 表格的行列對應關係\n"
+            "- 所有標題和標籤\n"
+            "如果某些文字模糊或無法辨識，請標記為 [模糊:原文內容]\n\n"
+            "【第二步 - 描述外觀】\n"
+            "簡要說明這是什麼類型的圖片（表格/圖表/截圖/設備照片等）及其排版方式。\n\n"
+            "【第三步 - 電信分析】\n"
+            "基於第一步的文字內容，提供專業的電信維運分析。\n\n"
+            "用繁體中文回答，格式清晰，重點突出。"
         )
         
         message = HumanMessage(content=[
@@ -254,22 +274,28 @@ def get_vision_ai_response(img_path):
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
         ])
         
-        print(f"📸 開始分析圖片，大小：{file_size} bytes，格式：{img.format}")
+        print(f"📸 開始分析圖片，大小：{file_size} bytes，原始格式：{original_format}")
         start_time = time.time()
         response = vision_llm.invoke([message])
         elapsed = time.time() - start_time
         result = response.content.strip()
         print(f"⏱️ 圖片分析耗時：{elapsed:.2f} 秒")
         
-        if not result or len(result) < 10:
-            return "🚨 圖片分析失敗，可能解析度不足或內容無法辨識。請確認圖片清晰且包含相關資訊。"
+        if not result or len(result) < 20:
+            return "🚨 圖片分析失敗，AI 無法提取文字。\n\n可能原因：\n1. 圖片解析度太低\n2. 文字太模糊或太小\n3. 圖片對比度不足\n\n建議：\n• 確保圖片清晰可見\n• 提高截圖解析度\n• 確保文字大小足夠（≥12pt）"
         
-        print(f"✅ 圖片分析完成，回應長度：{len(result)} 字")
+        print(f"✅ 圖片分析完成，提取文字長度：{len(result)} 字")
         return result
         
     except Exception as e:
         print(f"❌ 圖片解析錯誤：{str(e)}")
-        return f"🚨 圖片解析過程發生錯誤：{str(e)}。請確認圖片格式正確且未損壞。"
+        error_msg = str(e).lower()
+        if 'corrupt' in error_msg or 'truncated' in error_msg:
+            return "🚨 圖片檔案損壞，無法讀取。請重新上傳清晰的圖片。"
+        elif 'format' in error_msg:
+            return "🚨 圖片格式不支援。請上傳 JPEG、PNG 或 JPG 格式的圖片。"
+        else:
+            return f"🚨 圖片解析過程發生錯誤：{str(e)}\n\n請確認圖片清晰且格式正確。"
 
 # ================= 6. LINE Webhook 路由設定 =================
 @app.route("/callback", methods=['POST'])
@@ -374,4 +400,3 @@ def hello():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
