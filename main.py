@@ -7,6 +7,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from flask import Flask, request, abort
 import logging
+from PIL import Image
+import io
 
 # 隱藏 NVIDIA SDK 的詳細載入資訊，讓日誌只顯示重要警告與錯誤
 logging.getLogger("langchain_nvidia_ai_endpoints").setLevel(logging.WARNING)
@@ -36,6 +38,17 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 NVIDIA_API_KEY = os.environ.get('NVIDIA_API_KEY')
+PREVENT_SLEEP_URL = os.environ.get('PREVENT_SLEEP_URL', 'https://smobile-assistant.onrender.com/')
+
+# 檢查必要環境變數
+required_env_vars = ['LINE_CHANNEL_ACCESS_TOKEN', 'LINE_CHANNEL_SECRET', 'NVIDIA_API_KEY']
+missing_vars = [var for var in required_env_vars if not os.environ.get(var)]
+if missing_vars:
+    print(f"❌ 錯誤：缺少必要的環境變數：{', '.join(missing_vars)}")
+    print("請設定以下環境變數後重新啟動：")
+    for var in missing_vars:
+        print(f"  - {var}")
+    exit(1)
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -76,7 +89,7 @@ def send_morning_greeting():
         print(f"❌ 早安廣播發送失敗：{e}")
 
 def prevent_sleep():
-    url = "https://smobile-assistant.onrender.com/" 
+    url = PREVENT_SLEEP_URL
     try:
         requests.get(url, timeout=10)
     except:
@@ -91,6 +104,16 @@ scheduler.start()
 def initialize_rag():
     global vector_store
     data_dir = "./data"
+    index_path = "./faiss_index"
+    
+    # 嘗試載入現有的向量索引
+    if os.path.exists(index_path):
+        try:
+            vector_store = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
+            print("✅ 已從磁碟載入知識庫索引。\n")
+            return
+        except Exception as e:
+            print(f"⚠️ 載入現有索引失敗，將重新建構：{e}")
     
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
@@ -120,7 +143,13 @@ def initialize_rag():
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=30)
         docs = text_splitter.split_documents(documents)
         vector_store = FAISS.from_documents(docs, embeddings)
-        print(f"✅ 知識庫載入完成！共讀取 {files_count} 個檔案，切成 {len(docs)} 個區塊。\n")
+        
+        # 保存索引到磁碟
+        try:
+            vector_store.save_local(index_path)
+            print(f"✅ 知識庫載入完成！共讀取 {files_count} 個檔案，切成 {len(docs)} 個區塊，並已保存索引。\n")
+        except Exception as e:
+            print(f"⚠️ 保存索引失敗：{e}，但知識庫已載入記憶體。\n")
     else:
         print("⚠️ [警告] 機器人將以純對話模式啟動（無 RAG 輔助）。\n")
 
@@ -169,32 +198,56 @@ def get_text_ai_response(user_input):
 
 def get_vision_ai_response(img_path):
     try:
-        with open(img_path, "rb") as image_file:
-            image_b64 = base64.b64encode(image_file.read()).decode("utf-8")
+        # 檢查圖片檔案是否存在
+        if not os.path.exists(img_path):
+            return "🚨 圖片檔案不存在，請重新上傳。"
         
+        # 檢查檔案大小（限制 10MB）
+        file_size = os.path.getsize(img_path)
+        if file_size > 10 * 1024 * 1024:
+            return "🚨 圖片檔案過大（超過 10MB），請壓縮後重新上傳。"
+        
+        # 讀取並處理圖片
+        with Image.open(img_path) as img:
+            # 檢查圖片格式
+            if img.format not in ['JPEG', 'PNG', 'JPG']:
+                # 轉換為 JPEG 格式
+                img = img.convert('RGB')
+                buffer = io.BytesIO()
+                img.save(buffer, format='JPEG', quality=85)
+                image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            else:
+                # 直接編碼
+                with open(img_path, "rb") as image_file:
+                    image_b64 = base64.b64encode(image_file.read()).decode("utf-8")
+        
+        # 簡化 vision prompt，讓 AI 更容易理解
         vision_prompt = (
-           "你是一位具備頂尖 OCR 辨識與邏輯分析能力的專家。請仔細觀看這張圖片，並「嚴格遵守」以下步驟進行回覆：\n\n"
-            "第一步【強制 OCR 擷取】：\n"
-            "請先把你雙眼在圖片中看到的「所有文字」一字不漏地擷取出來。若為表格，請盡量還原欄位對應關係。如果圖片中完全沒有文字，請明確回答「本圖片無文字」。\n\n"
-            "第二步【客觀畫面描述】：\n"
-            "請以最客觀的角度描述圖片的外觀與排版（例如：這是一張白底黑字的表格截圖、這是一張折線圖、這是一張設備實體照片）。\n"
-            "🚨【最高警告】：絕對禁止憑空捏造圖片中不存在的物件（如風景、山丘、人物等）。只要你沒看到的，就不准寫！\n\n"
-            "第三步【專業深度解析】：\n"
-            "請基於「第一步」擷取出來的真實文字與「第二步」的客觀畫面，進行邏輯分析：\n"
-            " - 若內容涉及行動通訊或網管參數（如 IMMLB、Handover、PRB），請以資深電信維運專家的角度，解釋這些參數的用途與優化目的。\n"
-            " - 若為其他領域圖表或報表，請總結其核心重點。\n\n"
-            "第四步【排版規範】：\n"
-            "請全程使用繁體中文 (zh-TW)，嚴格按照上述「第一步」至「第三步」的架構條列式輸出。不要使用 Markdown 表格。若圖片過於模糊無法辨識，請直接回答「圖片解析度不足，無法準確辨識」。"
+            "你是一位電信維運專家，請分析這張圖片：\n\n"
+            "1. 首先，仔細觀察圖片中的所有文字內容，將它們一字不漏地抄寫下來。\n"
+            "2. 然後，簡要描述圖片的整體外觀（例如：這是表格、圖表、設備照片等）。\n"
+            "3. 最後，基於圖片內容，提供專業的電信維運分析和建議。\n\n"
+            "請用繁體中文回答，保持簡潔專業。"
         )
         
         message = HumanMessage(content=[
             {"type": "text", "text": vision_prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
         ])
+        
+        print(f"📸 開始分析圖片，大小：{file_size} bytes，格式：{img.format}")
         response = vision_llm.invoke([message])
-        return response.content.strip()
+        result = response.content.strip()
+        
+        if not result or len(result) < 10:
+            return "🚨 圖片分析失敗，可能解析度不足或內容無法辨識。請確認圖片清晰且包含相關資訊。"
+        
+        print(f"✅ 圖片分析完成，回應長度：{len(result)} 字")
+        return result
+        
     except Exception as e:
-        return f"🚨 圖片解析過程發生錯誤：{str(e)}"
+        print(f"❌ 圖片解析錯誤：{str(e)}")
+        return f"🚨 圖片解析過程發生錯誤：{str(e)}。請確認圖片格式正確且未損壞。"
 
 # ================= 6. LINE Webhook 路由設定 =================
 @app.route("/callback", methods=['POST'])
@@ -210,18 +263,22 @@ def callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     user_message = event.message.text
-    if "行南維運小幫手" not in user_message:
-        return
-        
-    clean_message = user_message.replace("行南維運小幫手", "").strip()
-    if not clean_message:
-         clean_message = "請用資深行動通訊維運前輩的人設簡短打個招呼，並問我有什麼告警數據或網路問題需要幫忙分析？"
 
-    try:
-        ai_reply = get_text_ai_response(clean_message)
-        ai_reply = ai_reply.replace("###", "").replace("**", "").strip()
-    except Exception as e:
-        ai_reply = f"🚨 抱歉，小幫手的大腦暫時連不上線 (錯誤: {str(e)})，請稍後再試！"
+    # 安全性檢查：驗證訊息長度
+    if len(user_message) > 2000:
+        ai_reply = "🚨 抱歉，訊息過長（超過 2000 字），請簡化後重新輸入。"
+    elif "行南維運小幫手" not in user_message:
+        return  # 忽略不包含關鍵詞的訊息
+    else:
+        clean_message = user_message.replace("行南維運小幫手", "").strip()
+        if not clean_message:
+             clean_message = "請用資深行動通訊維運前輩的人設簡短打個招呼，並問我有什麼告警數據或網路問題需要幫忙分析？"
+
+        try:
+            ai_reply = get_text_ai_response(clean_message)
+            ai_reply = ai_reply.replace("###", "").replace("**", "").strip()
+        except Exception as e:
+            ai_reply = f"🚨 抱歉，小幫手的大腦暫時連不上線 (錯誤: {str(e)})，請稍後再試！"
 
     if len(ai_reply) > 4800:
         ai_reply = ai_reply[:4800] + "\n\n(🚨 注意：因分析內容過長，已自動截斷。詳情請參閱網管系統原文。)"
@@ -240,30 +297,53 @@ def handle_text_message(event):
 def handle_image_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_blob_api = MessagingApiBlob(api_client)
+        img_path = None
         try:
+            print("📥 收到圖片訊息，正在下載...")
             message_content = line_bot_blob_api.get_message_content(event.message.id)
-            with tempfile.NamedTemporaryFile(dir='/tmp', prefix='line_img_', suffix='.jpg', delete=False) as tf:
+            
+            # 使用系統臨時目錄
+            with tempfile.NamedTemporaryFile(dir=tempfile.gettempdir(), prefix='line_img_', suffix='.jpg', delete=False) as tf:
                 tf.write(message_content)
                 img_path = tf.name
-
+            
+            print(f"✅ 圖片已儲存到：{img_path}")
+            
+            # 分析圖片
             ai_reply = get_vision_ai_response(img_path)
-            ai_reply = ai_reply.replace("###", "").replace("**", "").strip()
-            os.remove(img_path)
+            
+            # 清理臨時檔案
+            if img_path and os.path.exists(img_path):
+                os.remove(img_path)
+                print("🗑️ 臨時圖片檔案已清理")
 
         except Exception as e:
-            ai_reply = f"🚨 圖片接收或解析失敗：{str(e)}"
+            print(f"❌ 圖片處理錯誤：{str(e)}")
+            ai_reply = f"🚨 圖片接收或解析失敗：{str(e)}。請確認圖片格式正確（支援 JPEG/PNG）且檔案未損壞。"
+            
+            # 清理臨時檔案（如果存在）
+            if img_path and os.path.exists(img_path):
+                try:
+                    os.remove(img_path)
+                except:
+                    pass
 
+        # 處理回覆
         if len(ai_reply) > 4800:
             ai_reply = ai_reply[:4800] + "\n\n(🚨 注意：因分析內容過長，已自動截斷。詳情請參閱網管系統原文。)"
         if not ai_reply.strip():
-            ai_reply = "📡 抱歉，小幫手分析後無法產出有效建議，請檢查截圖是否清晰。"
+            ai_reply = "📡 抱歉，小幫手分析後無法產出有效建議，請檢查截圖是否清晰且包含相關資訊。"
 
-        MessagingApi(api_client).reply_message_with_http_info(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=ai_reply)]
+        try:
+            MessagingApi(api_client).reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=ai_reply)]
+                )
             )
-        )
+            print("✅ 圖片分析結果已發送")
+        except Exception as e:
+            print(f"❌ 發送回覆失敗：{str(e)}")
 
 @app.route("/", methods=['GET'])
 def hello():
