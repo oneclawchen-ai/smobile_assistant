@@ -110,7 +110,14 @@ def initialize_rag():
     else:
         print("⚠️ [警告] 機器人將以純對話模式啟動（無 RAG 輔助）。\n")
 
-initialize_rag()
+# ================= 4. RAG 知識庫初始化 =================
+def initialize_rag():
+    # ... (原本裡面的程式碼不變) ...
+
+# 🚀 關鍵修改：使用背景執行緒來載入知識庫，不阻擋伺服器啟動
+print("啟動背景執行緒載入 RAG 知識庫...")
+rag_thread = threading.Thread(target=initialize_rag)
+rag_thread.start()
 
 # ================= 5. 核心邏輯：文字解析與圖片解析 =================
 
