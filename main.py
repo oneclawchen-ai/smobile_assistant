@@ -209,6 +209,17 @@ def get_text_ai_response(user_input):
     else:
         return document_chain.invoke({"input": user_input, "context": []})
 
+
+def is_gateway_timeout_error(exc):
+    text = str(exc).lower()
+    return (
+        '504' in text or
+        'gateway timeout' in text or
+        'nvcf-status' in text and 'errored' in text or
+        'timeout' in text
+    )
+
+
 def get_vision_ai_response(img_path):
     try:
         # 檢查圖片檔案是否存在
@@ -220,54 +231,79 @@ def get_vision_ai_response(img_path):
         if file_size > 10 * 1024 * 1024:
             return "🚨 圖片檔案過大（超過 10MB），請壓縮後重新上傳。"
         
-        # 讀取並處理圖片（優化版本）
+        # 讀取原始圖片並執行預處理
         with Image.open(img_path) as img:
             original_format = img.format
-            
-            # 優化：如果圖片太大，先壓縮
-            max_width, max_height = 1280, 1280  # 提高到 1280 以保留更多細節
-            if img.width > max_width or img.height > max_height:
-                img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-                print(f"📸 圖片已自動縮放到 {img.width}x{img.height}")
-            
-            # 圖片預處理：增強對比度、銳度、亮度 以改善 OCR
-            img_processed = img.convert('RGB')
-            enhancer = ImageEnhance.Contrast(img_processed)
-            img_processed = enhancer.enhance(1.5)
-            enhancer = ImageEnhance.Sharpness(img_processed)
-            img_processed = enhancer.enhance(1.3)
-            enhancer = ImageEnhance.Brightness(img_processed)
-            img_processed = enhancer.enhance(1.1)
-            img_processed = img_processed.filter(ImageFilter.MedianFilter(size=3))
-            
-            # 保存為 JPEG，使用較高品質
-            buffer = io.BytesIO()
-            img_processed.save(buffer, format='JPEG', quality=85, optimize=False)
-            image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-            
-            print(f"📸 圖片已預處理：對比度+50%、銳度+30%、亮度+10%、去噪處理")
+            img = img.convert('RGB')
 
-        vision_prompt = (
-            "你是一位專業的視覺分析與 OCR 專家。\n"
-            "請直接觀察圖片內容，並產生兩段回覆：\n\n"
-            "文字結果：\n"
-            "若圖片中包含文字，請逐字列出實際看到的文字，不要編造不存在的內容；"
-            "若某段文字無法辨識，請標註為 [模糊:原文內容]。"
-            "如果圖片沒有文字，請寫「圖片中未檢測到明顯文字」。\n\n"
-            "圖像分析結果：\n"
-            "簡要描述圖片類型與觀察到的畫面，並判斷是否與電信維運相關。\n\n"
-            "請輸出時僅保留這兩段文字，不要包含步驟標題、指令說明或多餘的系統提示。"
-        )
-        message = HumanMessage(content=[
-            {"type": "text", "text": vision_prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
-        ])
-        print(f"📸 開始直接分析圖片，大小：{file_size} bytes，原始格式：{original_format}")
-        start_time = time.time()
-        response = vision_llm.invoke([message])
-        elapsed = time.time() - start_time
-        result = response.content.strip()
-        print(f"⏱️ 圖片直接分析耗時：{elapsed:.2f} 秒")
+            def prepare_image_bytes(source_img, max_width, max_height, quality):
+                image = source_img.copy()
+                if image.width > max_width or image.height > max_height:
+                    image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+                enhancer = ImageEnhance.Contrast(image)
+                image = enhancer.enhance(1.5)
+                enhancer = ImageEnhance.Sharpness(image)
+                image = enhancer.enhance(1.3)
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(1.1)
+                image = image.filter(ImageFilter.MedianFilter(size=3))
+                buffer = io.BytesIO()
+                image.save(buffer, format='JPEG', quality=quality, optimize=False)
+                return buffer.getvalue(), image
+
+            attempts = [
+                (1280, 1280, 85, "高畫質"),
+                (960, 960, 75, "中畫質"),
+                (720, 720, 65, "低畫質")
+            ]
+            last_error = None
+
+            for attempt_index, (max_width, max_height, quality, label) in enumerate(attempts, start=1):
+                image_bytes, processed_image = prepare_image_bytes(img, max_width, max_height, quality)
+                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                print(f"📸 嘗試第 {attempt_index} 次：{label}，尺寸 {processed_image.width}x{processed_image.height}，品質 {quality}")
+
+                vision_prompt = (
+                    "你是一位專業的視覺分析與 OCR 專家。\n"
+                    "請直接觀察圖片內容，並產生兩段回覆：\n\n"
+                    "文字結果：\n"
+                    "若圖片中包含文字，請逐字列出實際看到的文字，不要編造不存在的內容；"
+                    "若某段文字無法辨識，請標註為 [模糊:原文內容]。"
+                    "如果圖片沒有文字，請寫「圖片中未檢測到明顯文字」。\n\n"
+                    "圖像分析結果：\n"
+                    "簡要描述圖片類型與觀察到的畫面，並判斷是否與電信維運相關。\n\n"
+                    "請輸出時僅保留這兩段文字，不要包含步驟標題、指令說明或多餘的系統提示。"
+                )
+                message = HumanMessage(content=[
+                    {"type": "text", "text": vision_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+                ])
+
+                print(f"📸 開始直接分析圖片，大小：{file_size} bytes，原始格式：{original_format}")
+                start_time = time.time()
+                try:
+                    response = vision_llm.invoke([message])
+                    elapsed = time.time() - start_time
+                    result = response.content.strip()
+                    print(f"⏱️ 圖片直接分析耗時：{elapsed:.2f} 秒")
+
+                    if result and len(result) >= 20:
+                        print(f"✅ 圖片分析完成，提取文字長度：{len(result)} 字")
+                        return result
+                    last_error = Exception("模型回傳內容過短或空結果")
+                    print("⚠️ 圖片分析結果太短，嘗試更低畫質再次分析...")
+                except Exception as e:
+                    last_error = e
+                    print(f"⚠️ 圖片分析嘗試第 {attempt_index} 次失敗：{e}")
+                    if is_gateway_timeout_error(e) and attempt_index < len(attempts):
+                        print("🔁 偵測到可能 504/timeout，嘗試降低圖片大小與品質重試...")
+                        continue
+                    break
+
+            if last_error:
+                error_msg = str(last_error)
+                return f"🚨 圖片解析過程發生錯誤：{error_msg}\n\n請確認圖片清晰且格式正確，或稍後再試一次。"
+
 
         if not result or len(result) < 20:
             return "🚨 圖片分析失敗，AI 無法提取文字。\n\n可能原因：\n1. 圖片解析度太低\n2. 文字太模糊或太小\n3. 圖片對比度不足\n\n建議：\n• 確保圖片清晰可見\n• 提高截圖解析度\n• 確保文字大小足夠（≥12pt）"
