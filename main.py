@@ -230,60 +230,44 @@ def get_vision_ai_response(img_path):
                 img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
                 print(f"📸 圖片已自動縮放到 {img.width}x{img.height}")
             
-            # 圖片預處理：增強對比度和銳度以改善 OCR
+            # 圖片預處理：增強對比度、銳度、亮度 以改善 OCR
             img_processed = img.convert('RGB')
-            
-            # 增強對比度（幫助識別文字）
             enhancer = ImageEnhance.Contrast(img_processed)
-            img_processed = enhancer.enhance(1.5)  # 提升 50% 對比度
-            
-            # 增強銳度（使文字邊界更清晰）
+            img_processed = enhancer.enhance(1.5)
             enhancer = ImageEnhance.Sharpness(img_processed)
-            img_processed = enhancer.enhance(1.3)  # 提升 30% 銳度
-            
-            # 增強亮度（避免過暗）
+            img_processed = enhancer.enhance(1.3)
             enhancer = ImageEnhance.Brightness(img_processed)
-            img_processed = enhancer.enhance(1.1)  # 提升 10% 亮度
+            img_processed = enhancer.enhance(1.1)
+            img_processed = img_processed.filter(ImageFilter.MedianFilter(size=3))
             
-            # 保存為 JPEG，使用更高品質
+            # 保存為 JPEG，使用較高品質
             buffer = io.BytesIO()
-            img_processed.save(buffer, format='JPEG', quality=85, optimize=False)  # 提高到 85，關閉優化以保留細節
+            img_processed.save(buffer, format='JPEG', quality=85, optimize=False)
             image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
             
-            print(f"📸 圖片已預處理：增強對比度 +50%、銳度 +30%、亮度 +10%")
-        
-        # 優化的 OCR prompt - 更明確和詳細
+            print(f"📸 圖片已預處理：對比度+50%、銳度+30%、亮度+10%、去噪處理")
+
         vision_prompt = (
-            "你是一位專業的 OCR 文字識別專家和電信維運分析師。\n\n"
-            "【第一步 - 強制 OCR 擷取】\n"
-            "請仔細觀察圖片中的所有文字內容（包括表格、圖表、標籤等），一字不漏地將其完整抄寫出來。\n"
-            "特別注意：\n"
-            "- 所有數字、參數名稱、單位\n"
-            "- 表格的行列對應關係\n"
-            "- 所有標題和標籤\n"
-            "如果某些文字模糊或無法辨識，請標記為 [模糊:原文內容]\n\n"
-            "【第二步 - 描述外觀】\n"
-            "簡要說明這是什麼類型的圖片（表格/圖表/截圖/設備照片等）及其排版方式。\n\n"
-            "【第三步 - 電信分析】\n"
-            "基於第一步的文字內容，提供專業的電信維運分析。\n\n"
-            "用繁體中文回答，格式清晰，重點突出。"
+            "你是一位專業的 OCR 文字識別專家。"
+            "請僅從圖片中直接讀取文字內容，絕對不要編造未出現的資訊，也不要以任何步驟或標題形式回覆。"
+            "只輸出圖片中實際看到的文字，若無法辨識請標注為 [模糊:原文內容]。"
+            "若圖片包含表格，請直接依照欄位與欄位值列出，不要使用 *、+、- 或 | 等符號。"
+            "回答時僅保留 OCR 結果，不要包含任何分析、總結、格式說明或指令。"
         )
-        
         message = HumanMessage(content=[
             {"type": "text", "text": vision_prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
         ])
-        
-        print(f"📸 開始分析圖片，大小：{file_size} bytes，原始格式：{original_format}")
+        print(f"📸 開始直接分析圖片，大小：{file_size} bytes，原始格式：{original_format}")
         start_time = time.time()
         response = vision_llm.invoke([message])
         elapsed = time.time() - start_time
         result = response.content.strip()
-        print(f"⏱️ 圖片分析耗時：{elapsed:.2f} 秒")
-        
+        print(f"⏱️ 圖片直接分析耗時：{elapsed:.2f} 秒")
+
         if not result or len(result) < 20:
             return "🚨 圖片分析失敗，AI 無法提取文字。\n\n可能原因：\n1. 圖片解析度太低\n2. 文字太模糊或太小\n3. 圖片對比度不足\n\n建議：\n• 確保圖片清晰可見\n• 提高截圖解析度\n• 確保文字大小足夠（≥12pt）"
-        
+
         print(f"✅ 圖片分析完成，提取文字長度：{len(result)} 字")
         return result
         
